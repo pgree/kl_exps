@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1" />
 <meta name="generator" content="pdoc 0.10.0" />
 <title>kl_exps API documentation</title>
-<meta name="description" content="" />
+<meta name="description" content="…" />
 <link rel="preload stylesheet" as="style" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/11.0.1/sanitize.min.css" integrity="sha256-PK9q560IAAa6WVRRh76LtCaI8pjTJ2z11v0miyNNjrs=" crossorigin>
 <link rel="preload stylesheet" as="style" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/11.0.1/typography.min.css" integrity="sha256-7l/o7C8jubJiy74VsKTidCy1yBkRtiUGbVkYBylBqUg=" crossorigin>
 <link rel="stylesheet preload" as="style" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/10.1.1/styles/github.min.css" crossorigin>
@@ -23,59 +23,227 @@
 <h1 class="title">Module <code>kl_exps</code></h1>
 </header>
 <section id="section-intro">
+<hr>
+<p>This module contains the following functions:</p>
+<p>kl_gp_reg:
+performs gaussian process regression using kl expansions</p>
+<p>eigen_decomp:
+compute the eigendecomposition of an integral operator</p>
+<p>eval_eigenfunction:
+evaluate an eigenfunction at one point</p>
+<p>check_l2_error:
+check the difference between the effective and true covariance function</p>
+<p>gp_reg_naive:
+perform gp regression using a naive implementation</p>
+<p>legendre_nodes_weights:
+compute Gaussian nodes and weights on an interval</p>
+<p>legendre_eval_exp:
+evaluate a Legendre expansion</p>
+<p>legendre_pols:
+evaluate many Legendre polynomials at one point</p>
+<p>legendre_mats:
+compute the matrices that convert function tabulation to expansions</p>
+<p>kernel_matern32:
+evaluates matern 3/2 kernel</p>
+<p>kernel_se:
+evaluates squared-exponential (Gaussian) kernel</p>
+<hr>
+<p>The functions contained in this module are used for performing Gaussian
+process regression by using KL-expansion representations
+of Gaussian processes.</p>
+<p>See <a href="https://arxiv.org/abs/2108.05924">https://arxiv.org/abs/2108.05924</a> for details.</p>
 <details class="source">
 <summary>
 <span>Expand source code</span>
 </summary>
-<pre><code class="python">import numpy as np
-from scipy.special import legendre as leg
-import matplotlib.pyplot as plt
+<pre><code class="python">&#34;&#34;&#34;
+---------------------------------------------------------------------
+
+This module contains the following functions:
+
+kl_gp_reg:
+    performs gaussian process regression using kl expansions
+
+eigen_decomp:
+    compute the eigendecomposition of an integral operator
+
+eval_eigenfunction:
+    evaluate an eigenfunction at one point
+
+check_l2_error:
+    check the difference between the effective and true covariance function
+
+gp_reg_naive:
+    perform gp regression using a naive implementation
+
+legendre_nodes_weights:
+    compute Gaussian nodes and weights on an interval
+
+legendre_eval_exp:
+    evaluate a Legendre expansion
+
+legendre_pols:
+    evaluate many Legendre polynomials at one point
+
+legendre_mats:
+    compute the matrices that convert function tabulation to expansions
+
+kernel_matern32:
+    evaluates matern 3/2 kernel
+
+kernel_se:
+    evaluates squared-exponential (Gaussian) kernel
+
+---------------------------------------------------------------------
+
+The functions contained in this module are used for performing Gaussian
+process regression by using KL-expansion representations
+of Gaussian processes.
+
+See https://arxiv.org/abs/2108.05924 for details.
+
+&#34;&#34;&#34;
+
 import unittest
 import logging
+import numpy as np
+from scipy.special import legendre as leg
+import matplotlib.pyplot as plt
 
 
-def eval_eigenfunction(coefs, j, t0, t1, x):
+
+def kl_gp_reg(n, kern, el, a, b, xs, ys, sigma2, check_err=False):
+    &#39;&#39;&#39;
+    evaluate the conditional mean and covariance of a Gaussian process
+    regression using KL-expansions. That is, find the mean coefficients
+    in the KL-expansion and the covariance of those coefficients
+
+    Parameters
+    ----------
+    n: int
+        the number of discretization nodes
+    kern: function
+        the covariance kernel (a function) with calling sequence
+        `kern(x, y, el)` where `el` is the timescale hyperparameter
+    el: float
+        timescale of the covariance kernel
+    a: float
+        the lower bound of the interval on which the Gaussian process is defined
+    b: float
+        the upper bound of the interval on which the Gaussian process is defined
+    xs: array_like
+        the independent variable of the data
+    ys: array_like
+        the dependent variable of the data, ie the observations
+    sigma2: float
+        the residual variance
+    check_err: bool
+        when set to True, this function will compute the L2 accuracy of the
+        effective covariance kernel compared to the true covariance kernel
+
+    Returns
+    -------
+    lams: array_like
+        the eigenvalues of the integral operator that&#39;s discretized
+    coefs: array_like
+        n x k array with the expansion coefficients in a Legendre basis
+        of the KL-expansion basis functions
+    coefs_mean: array_like
+        arry of length k. the expectation of the coefficients in a
+        kl-expansion basis
+    coefs_cov: array_like
+        k x k array. the covariance of the posterior coefficients
+    &#39;&#39;&#39;
+
+    # transform xs and el to [-1, 1]
+    xs_scaled = -1.0 + 2.0*(xs - a)/(b-a)
+    el2_scaled = 2.0*el/(b-a)
+    def kern_scaled(x, y):
+        return kern(x, y, el2_scaled)
+
+    # number of data points
+    nn = np.shape(xs)[0]
+
+    # eigen decomposition of integral operator
+    k, lams, _, coefs = eigen_decomp(n, a=-1.0, b=1.0, kern=kern_scaled)
+    lams = lams[:k]
+    coefs = coefs[:,:k]
+
+    # scale eigenfunctions
+    coefs *= np.sqrt(lams)
+
+    # evaluate legendre polynomials at data points for constructing a
+    pols = np.zeros((nn, n))
+    for i in range(nn):
+        pols[i] = legendre_pols(xs_scaled[i], n-1)
+
+    # construct a
+    a = np.dot(pols, coefs)
+
+    # eigendecomposition of of ata
+    lams_ata, u = np.linalg.eigh(np.dot(a.T, a))
+
+    # compute posterior mean
+    aty = np.dot(a.T, ys)
+    d_inv = np.diag(1 / (sigma2 + lams_ata))
+    coefs_mean = np.dot(u, np.dot(d_inv, np.dot(u.T, aty)))
+
+    # compute posterior covariance
+    d_inv = sigma2*d_inv
+    coefs_cov = np.dot(u, np.dot(d_inv, u.T))
+
+    # check accuracy by taking L2 difference between the true and effective
+    # covariance kernel
+    if check_err:
+        err1 = check_l2_err(a, b, kern_scaled, coefs, nn=21)
+        err2 = check_l2_err(a, b, kern_scaled, coefs, nn=42)
+        print(f&#39;L2 error of effective kernel: {err1}&#39;)
+        print(f&#39;error accuracy: {err2 - err1}&#39;)
+
+    return lams, coefs, coefs_mean, coefs_cov
+
+
+def eval_eigenfunction(coefs, j, a, b, x):
     &#39;&#39;&#39;
     evaluate one basis function in the kl-expansion at one point.
 
     Parameters
     ----------
     coefs: array_like
-        an n x m np.array. Each column contains the Legendre expansion
-        of one eigenfunction. 
+        an n x m array, each column of which contains the Legendre expansion
+        of one eigenfunction.
     j: int
         the index of the eigenfunction to be evaluated
-    t0: float
+    a: float
         the lower bound of the interval on which the eigenfunction is defined
-    t1: float
+    b: float
         the upper bound of the interval on which the eigenfunction is defined
     x: float
-        the point in \([t0, t1]\) at which to evaluate the eigenfunction
+        the point in \([a, b]\) at which to evaluate the eigenfunction
 
     Returns
     -------
     f: float
-        the value of the eigenfunction 
-
+        the value of the eigenfunction
     &#39;&#39;&#39;
 
     n = coefs.shape[0]
 
-    # move x to [t0, t1]
-    x2 = -1.0 + 2.0*(x - t0)/(t1-t0)
+    # move x to [a, b]
+    x_scaled = -1.0 + 2.0*(x - a)/(b-a)
 
     # evaluate
-    f = lege_eval_exp(n-1, coefs[:,j], x2)
+    f = legendre_eval_exp(n-1, coefs[:,j], x_scaled)
 
     return f
 
 
-
-def gp_reg_naive(kern, xs, ys, sigma2):
+def gp_reg_naive(kern, xs, sigma2):
     &#39;&#39;&#39;
-    construct the full inverse of the covariance matrix that appears in 
-    Gaussian process regression by taking an eigendecomposition of the 
-    covariance matrix. this function exists for testing purposes. 
+    construct the full inverse of the covariance matrix that appears in
+    Gaussian process regression by taking an eigendecomposition of the
+    covariance matrix -- \(K(x_i, x_j) + \sigma^2 * I\). This function
+    exists for testing purposes.
 
     Parameters
     ----------
@@ -83,15 +251,14 @@ def gp_reg_naive(kern, xs, ys, sigma2):
         the covariance kernel with calling sequence kern(x, y)
     xs: array_like
         the independent variable of the observed data
-    ys: array_like
-        the dependent variables of the observed data
     sigma2: float
         the residual variance (nugget)
 
     Returns
     -------
     c_inv: array_like
-        the inverse of the covariance matrix 
+        n x n array where n is the length of xs and ys. this matrix is
+        the inverse of the covariance matrix
     &#39;&#39;&#39;
 
     nn = np.shape(xs)[0]
@@ -112,113 +279,25 @@ def gp_reg_naive(kern, xs, ys, sigma2):
     return c_inv
 
 
-
-def kl_gp_reg(n, kern, el, t0, t1, xs, ys, sigma2, check_err=False):
-    &#39;&#39;&#39;
-    evaluate the conditional mean and covariance of a gaussian process using
-    KL-expansions. That is, find the mean coefficients in the KL-expansion and 
-    the covariance of those coefficients 
-
-    Parameters
-    ----------
-    n: int
-        the number of discretization nodes
-    kern: function
-        the covariance kernel (a function)
-    xs: array_like
-        the independent variable of the data
-    ys: array_like
-        the dependent variable of the data, ie the observations
-    sigma2: float
-        the residual variance 
-
-    Returns
-    -------
-    lams: array_like
-        the eigenvalues of the integral operator that&#39;s discretized
-    coefs: array_like
-        the expansion coefficients of the eigenfunctions in a Legendre basis
-    coefs_mean: array_like
-        the posterior mean, the expectation of the coefficients in a 
-        kl-expansion basis
-    coefs_cov: array_like
-        the covariance of the posterior coefficients
-    &#39;&#39;&#39;
-
-    # transform xs and el to [-1, 1]
-    xs2 = -1.0 + 2.0*(xs - t0)/(t1-t0)
-    el2 = 2.0*el/(t1-t0)
-    def kern2(x, y): return kern(x, y, el2)
-
-    # number of data points
-    nn = np.shape(xs)[0]
-
-    # eigen decomposition of integral operator
-    t0 = -1.0
-    t1 = 1.0
-    k, lams, u, coefs = eigen_decomp(n, t0, t1, kern2)
-    lams = lams[:k]
-    coefs = coefs[:,:k]
-
-    # scale eigenfunctions
-    for i in range(n):
-        for j in range(k):
-            coefs[i, j] = coefs[i, j] * np.sqrt(lams[j])
-
-    # evaluate legendre polynomials at data points for constructing a
-    pols = np.zeros((nn, n))
-    for i in range(nn):
-        pols[i] = lege_pols(xs2[i], n-1)
-
-    # construct a
-    a = np.dot(pols, coefs)
-    
-    # eigendecomposition of of ata 
-    lams_ata, u = np.linalg.eigh(np.dot(a.T, a))
-    ###print(np.dot(a.T, a))
-
-    # compute posterior mean 
-    aty = np.dot(a.T, ys)
-    d_inv = 1 / (sigma2 + lams_ata)
-    d_inv = np.diag(d_inv)
-    coefs_mean = np.dot(u, np.dot(d_inv, np.dot(u.T, aty)))
-
-    # compute posterior covariance 
-    d_inv = sigma2*d_inv
-    coefs_cov = np.dot(u, np.dot(d_inv, u.T))
-
-    # check accuracy by taking L2 difference between the true and effective 
-    # covariance kernel
-    if check_err:
-        nn1 = 21
-        err1 = check_l2_err(t0, t1, kern2, coefs, nn1)
-        nn2 = 2*nn1
-        err2 = check_l2_err(t0, t1, kern2, coefs, nn2)
-        print(f&#39;L2 error of effective kernel: {err1}&#39;)
-        print(f&#39;error accuracy: {err2 - err1}&#39;)
-
-    return lams, coefs, coefs_mean, coefs_cov
-
-
-def check_l2_err(t0, t1, kern, coefs, nn):
-    &#39;&#39;&#39;
-    check the accruracy of a KL-expansion by computing the L2
-    norm of the difference between the true kernel and the 
-    effective kernel -- the outerproduct of eigenfunctions. That 
-    \(L^2\) difference is an integral over the square 
-    \([t0, t1] \\times [t0, t1] \subseteq \mathbb{R}^2\) and is computed
+def check_l2_err(a, b, kern, coefs, nn):
+    &#39;&#39;&#39;check the accruracy of a KL-expansion by computing the L2
+    norm of the difference between the true kernel and the
+    effective kernel -- the outerproduct of eigenfunctions. That
+    \(L^2\) difference is an integral over the square
+    \([a, b] \\times [a, b] \subseteq \mathbb{R}^2\) and is computed
     using a tensor product of Gaussian nodes.
 
     Parameters
     ----------
-    t0: float
+    a: float
         the lower bound of the interval on which the eigenfunctions are defined
-    t1: float
+    b: float
         the upper bound of the interval on which the eigenfunctions are defined
     kern: function
         the true covariance kernel with calling sequence kern(x, y)
     coefs: array_like
-        the Legendre expansions of the eigenfunctions of the KL-expansion
+        n x m array of the Legendre expansions of the basis functions of the
+        KL-expansion
     nn: int
         the number of Gaussian nodes in each direction
 
@@ -231,7 +310,7 @@ def check_l2_err(t0, t1, kern, coefs, nn):
     # get length of legendre expansions
     n, k = np.shape(coefs)
 
-    ts, whts = lege_nodes_weights(t0, t1, nn)
+    ts, whts = legendre_nodes_weights(a, b, nn)
 
     err = 0.0
     for i in range(nn):
@@ -240,8 +319,8 @@ def check_l2_err(t0, t1, kern, coefs, nn):
             y = ts[j]
             dsum = 0.0
             for ijk in range(k):
-                f1 = lege_eval_exp(n-1, coefs[:,ijk], x)
-                f2 = lege_eval_exp(n-1, coefs[:,ijk], y)
+                f1 = legendre_eval_exp(n-1, coefs[:,ijk], x)
+                f2 = legendre_eval_exp(n-1, coefs[:,ijk], y)
                 dsum += f1*f2
             err += (dsum - kern(x, y))**2 * whts[i]*whts[j]
     err = np.sqrt(err)
@@ -249,45 +328,44 @@ def check_l2_err(t0, t1, kern, coefs, nn):
     return err
 
 
-def lege_eval_exp(n, lege_coefs, x):
+def legendre_eval_exp(n, legendre_coefs, x):
     &#39;&#39;&#39;
-    evaluate a legendre expansion at one point using the three-term recurrence 
+    evaluate a legendre expansion at one point using the three-term recurrence
     forumula
 
     Parameters
     ----------
     n: int
         the length of the Legendre expansion
-    lege_coefs: array_like
-        the coefficients in the Legendre expansion
+    legendre_coefs: array_like
+        array containing the coefficients in the Legendre expansion
     x: float
         the point at which to evaluate the Legendre expansion
 
     Returns
     -------
     f: float
-        the value of the expansion 
+        the value of the expansion
     &#39;&#39;&#39;
 
-    # initialize recurrence 
+    # initialize recurrence
     pjm2 = 1
     pjm1 = x
 
     # first two terms
-    f = lege_coefs[0]*pjm2+lege_coefs[1]*pjm1
-    der = lege_coefs[1]
+    f = legendre_coefs[0]*pjm2+legendre_coefs[1]*pjm1
 
-    # recurrence 
+    # recurrence
     for j in range(2, n+1):
         pj=  ((2*j-1)*x*pjm1-(j-1)*pjm2 ) / j
-        f=f+lege_coefs[j]*pj
+        f=f+legendre_coefs[j]*pj
         pjm2 = pjm1
         pjm1 = pj
 
     return f
 
 
-def lege_uv(n):
+def legendre_mats(n):
     &#39;&#39;&#39;
     construct matrices for transforming coefficients in a Legendre 
     expansion to tabulations at Gaussian nodes and vice versa
@@ -299,24 +377,25 @@ def lege_uv(n):
 
     Returns
     -------
-    v: array_like
-        transforms coefficients in legendre expansion to its values at 
-        Gaussian nodes
-    u: array_like
-        transforms values at Gaussian nodes to Legendre expansions
+    coefs_to_vals: array_like
+        n x n matrix that transforms coefficients in legendre expansion 
+        to its values at Gaussian nodes
+    vals_to_coefs: array_like
+        n x n matrix that transforms values at Gaussian nodes to 
+        Legendre expansions
     &#39;&#39;&#39;
     
     # initialize matrices
-    u = np.zeros((n,n))
-    v = np.zeros((n,n))
+    vals_to_coefs = np.zeros((n,n))
+    coefs_to_vals = np.zeros((n,n))
 
     # construct order-n Gaussian nodes and weights
-    t0 = -1.0
-    t1 = 1.0
-    x, whts = lege_nodes_weights(t0, t1, n)
+    a = -1.0
+    b = 1.0
+    x, whts = legendre_nodes_weights(a, b, n)
 
     for i in range(n):
-        v[i] = lege_pols(x[i], n-1)
+        coefs_to_vals[i] = legendre_pols(x[i], n-1)
  
     # now, v converts coefficients of a legendre expansion
     # into its values at the gaussian nodes. construct its
@@ -327,17 +406,19 @@ def lege_uv(n):
         d = 1.0
         d = d * (2.0 * (i+1) - 1.0) / 2.0
         for j in range(n):
-            u[i,j]=v[j,i]*whts[j]*d
+            vals_to_coefs[i,j]=coefs_to_vals[j,i]*whts[j]*d
 
-    return u, v
+    return vals_to_coefs, coefs_to_vals
 
 
-def lege_pols(x, n):
+def legendre_pols(x, n):
     &#39;&#39;&#39;
     Evaluate the Legendre polynomials of order 0,1,2,...,n at one point
 
     Parameters
     ----------
+    n: float
+        the point at which to evluate the polynomials
     n: int
         the order of the largest Legendre polynomial to be evaluated
 
@@ -351,8 +432,10 @@ def lege_pols(x, n):
     pk = 1.0 
     pkp1 = x 
 
-    if (n == 0): return np.array([1.0])
-    if (n == 1): return np.array([1.0, x])
+    if n == 0: 
+        return np.array([1.0])
+    if n == 1: 
+        return np.array([1.0, x])
 
     # n is greater than 2. conduct recursion
     pols = np.zeros(n+1)
@@ -367,10 +450,10 @@ def lege_pols(x, n):
     return pols
     
 
-def eigen_decomp(n, t0, t1, kern, tol=10**(-13)):
+def eigen_decomp(n, a, b, kern, tol=10**(-13)):
     &#34;&#34;&#34;Evaluate the eigendecomposition of the integral operator 
 
-      $$Kf(x) = \int_{t0}^{t1} k(x, y) f(y) dy$$
+      $$Kf(x) = \int_{a}^{b} k(x, y) f(y) dy$$
 
     using a Nystrom method. 
 
@@ -378,9 +461,9 @@ def eigen_decomp(n, t0, t1, kern, tol=10**(-13)):
     ----------
     n: int
         the number of discretization nodes    
-    t0: float
+    a: float
         the lower bound of the interval on which the eigenfunctions are defined
-    t1: float
+    b: float
         the upper bound of the interval on which the eigenfunctions are defined
     kern: function
         the true covariance kernel with calling sequence kern(x, y)
@@ -393,60 +476,58 @@ def eigen_decomp(n, t0, t1, kern, tol=10**(-13)):
     k: int
         the number of eigenvalues with magnitude greater than `tol`
     lams: array_like
-        eigenvalues of the integral operator
-    u: array_like
-        eigenfunctions tabulated at gaussian nodes
+        array of length n containing eigenvalues of the integral operator
+    vals: array_like
+        n x n array with eigenfunctions tabulated at gaussian nodes
     coefs: array_like
-        legendre expansion of eigenvectors
+        n x n array with legendre expansion of eigenvectors
     &#34;&#34;&#34;
 
-    xs, whts = lege_nodes_weights(t0, t1, n)
+    xs, whts = legendre_nodes_weights(a, b, n)
     
     # construct kernel matrix
     a = np.zeros((n,n))
     for i in range(n):
         for j in range(n):
-            a[i, j] = kern(xs[i], xs[j])
-            a[i, j] *= np.sqrt(whts[i]*whts[j])
+            a[i, j] = kern(xs[i], xs[j]) * np.sqrt(whts[i]*whts[j])
     
     # eigendecomposition of symmetric matrix a
-    lams, u = np.linalg.eigh(a)
+    lams, vals = np.linalg.eigh(a)
 
     # sort eigenvalues in descending order
     args = np.argsort(lams)[::-1]
     lams = lams[args]
-    u = u[:,args]
+    vals = vals[:,args]
     
     # truncate eigendecomposition 
     for i in range(n):
-        tmp = np.abs(lams[i]/lams[0])
-        if tmp &gt; tol:
+        if np.abs(lams[i]/lams[0]) &gt; tol:
             k = i
 
     # scale eigenfunctions back to tabulation space
     for i in range(n):
         for j in range(n):
-            u[i, j] = u[i, j]/np.sqrt(whts[i])
+            vals[i, j] = vals[i, j] / np.sqrt(whts[i])
 
     # convert eigenfunctions to coefficient space
-    uleg, vleg = lege_uv(n)
-    coefs = np.dot(uleg, u)
+    vals_to_coefs, _ = legendre_mats(n)
+    coefs = np.dot(vals_to_coefs, vals)
 
-    return k, lams, u, coefs
+    return k, lams, vals, coefs
 
 
-def lege_nodes_weights(t0, t1, n):
+def legendre_nodes_weights(a, b, n):
     &#39;&#39;&#39;
     Compute order-n Gaussian nodes and weights
 
     Parameters
     ----------
+    a: float
+        the lower bound of the interval on which the Gaussian nodes are defined
+    b: float
+        the upper bound of the interval on which the Gaussian nodes are defined
     n: int
         the order of Gaussian nodes
-    t0: float
-        the lower bound of the interval on which the Gaussian nodes are defined
-    t1: float
-        the upper bound of the interval on which the Gaussian nodes are defined
 
     Returns
     -------
@@ -468,8 +549,8 @@ def lege_nodes_weights(t0, t1, n):
     # scale weights and scale and shift nodes
     for i in range(n):
         tmp = (xleg[i] + 1.0)/2.0
-        xs[i] = t0 + (t1-t0)*tmp
-        weights[i] = wleg[i]*(t1-t0)/2.0
+        xs[i] = a + (b-a)*tmp
+        weights[i] = wleg[i]*(b-a)/2.0
 
     return xs, weights
 
@@ -497,7 +578,7 @@ def kernel_se(x, y, el):
 
 def kernel_matern32(x, y, el):
     &#39;&#39;&#39;
-    squared exponential kernel
+    matern 3/2 kernel 
 
     Parameters
     ----------
@@ -518,36 +599,45 @@ def kernel_matern32(x, y, el):
 
 
 class TestKL(unittest.TestCase):
+    &#34;&#34;&#34;For unit testing&#34;&#34;&#34;
     def test1(self):
+        &#34;&#34;&#34;in this testing routine, we compare the results of Gaussian
+        process regression using KL expansions with the same procedure
+        using the straightforward naive algorithm that requires o(n^3)
+        operations.
+        &#34;&#34;&#34;
     
         np.random.seed(1)
     
         # set kernel
         el = 0.5
-        def kern(x, y): return kernel_se(x, y, el)
+        def kern(x, y):
+            return kernel_se(x, y, el)
     
-        # set residual variance 
+        # set residual variance
         sigma2 = 0.7
         
         # construct data and true solution
-        t0 = -1.0
-        t1 = 1.0
+        a = -1.0
+        b = 1.0
         nn = 10
-        xs = np.linspace(t0, t1, nn)
+        xs = np.linspace(a, b, nn)
         eps = np.random.normal(size=nn)
-        ys = np.cos(3*np.exp(xs/(t1-t0))) + eps
+        ys = np.cos(3*np.exp(xs/(b-a))) + eps
         nn_true = 100
-        xs_true = np.linspace(t0, t1, nn_true)
-        ys_true = np.cos(3*np.exp(xs_true/(t1-t0)))
+        xs_true = np.linspace(a, b, nn_true)
+        ys_true = np.cos(3*np.exp(xs_true/(b-a)))
         
-        # use kl expansions compute conditional mean and covariance of coefficients 
+        # use kl-expansions to compute conditional mean and covariance
+        # of a Gaussian process. the mean and covariance are defined over
+        # the space of coefficients in the kl-expansion
         n = 100
-        lams, coefs, coefs_mean, coefs_cov = kl_gp_reg(n, kernel_se, el, 
-            t0, t1, xs, ys, sigma2, check_err=False)
+        lams, coefs, coefs_mean, coefs_cov = kl_gp_reg(n, kernel_se, el,
+            a, b, xs, ys, sigma2, check_err=False)
     
         # set points at which to evaluate conditional mean
         nn_sol = 100
-        ts_sol = np.linspace(t0, t1, nn_sol)
+        ts_sol = np.linspace(a, b, nn_sol)
         ys_sol = np.zeros_like(ts_sol)
     
         # tabulate conditional mean
@@ -555,7 +645,7 @@ class TestKL(unittest.TestCase):
         for i in range(nn_sol):
             f = 0.0
             for j in range(k):
-                fj = eval_eigenfunction(coefs, j, t0, t1, ts_sol[i])
+                fj = eval_eigenfunction(coefs, j, a, b, ts_sol[i])
                 f = f + fj * coefs_mean[j]
             ys_sol[i] = f
     
@@ -567,36 +657,36 @@ class TestKL(unittest.TestCase):
     
         # compute variance at the points where mean was tabulated
         fs = np.zeros(k)
-        vars = np.zeros(nn_sol)
+        variance = np.zeros(nn_sol)
         for i in range(nn_sol):
             for j in range(k):
-                fs[j] = eval_eigenfunction(coefs, j, t0, t1, ts_sol[i])
-            vars[i] = np.dot(fs.T, np.dot(coefs_cov, fs.T))
-    
+                fs[j] = eval_eigenfunction(coefs, j, a, b, ts_sol[i])
+            variance[i] = np.dot(fs.T, np.dot(coefs_cov, fs.T))
     
         # now check whether using a naive, o(n^3)
-        # straightforward algorithm gets the same solution as the 
-        # kl-expansion solution. 
+        # straightforward algorithm gets the same solution as the
+        # kl-expansion solution.
     
         # construct the vector C^{-1}*y
-        c_inv = gp_reg_naive(kern, xs, ys, sigma2)
+        c_inv = gp_reg_naive(kern, xs, sigma2)
         k_inv_y = np.dot(c_inv, ys)
       
         # tabulate mean at the same points where kl expansions conditional mean
-        # was tabulated 
+        # was tabulated
         tmp2 = np.zeros((nn_sol, nn))
         for i in range(nn_sol):
             tmp2[i] = kern(ts_sol[i], xs)
         ys_sol2 = np.dot(tmp2, k_inv_y)
     
         # tabulate variances at each point
-        vars2 = np.zeros(nn_sol)
+        variance2 = np.zeros(nn_sol)
         for i in range(nn_sol):
-            vars2[i] = kern(0.0, 0.0) - np.dot(tmp2[i], np.dot(c_inv, tmp2[i].T))
+            variance2[i] = kern(0.0, 0.0) - np.dot(tmp2[i],
+                                                   np.dot(c_inv, tmp2[i].T))
         
-        # assert that the solutions obtained via kl expansions and 
+        # assert that the solutions obtained via kl expansions and
         # via naive implementation agree to several digits
-        np.testing.assert_allclose(vars, vars2, atol=1e-10)
+        np.testing.assert_allclose(variance, variance2, atol=1e-10)
         np.testing.assert_allclose(ys_sol, ys_sol2, atol=1e-10)
     
 
@@ -614,25 +704,26 @@ if __name__ == &#39;__main__&#39;:
 <h2 class="section-title" id="header-functions">Functions</h2>
 <dl>
 <dt id="kl_exps.check_l2_err"><code class="name flex">
-<span>def <span class="ident">check_l2_err</span></span>(<span>t0, t1, kern, coefs, nn)</span>
+<span>def <span class="ident">check_l2_err</span></span>(<span>a, b, kern, coefs, nn)</span>
 </code></dt>
 <dd>
 <div class="desc"><p>check the accruracy of a KL-expansion by computing the L2
 norm of the difference between the true kernel and the
 effective kernel &ndash; the outerproduct of eigenfunctions. That
 <span><span class="MathJax_Preview">L^2</span><script type="math/tex">L^2</script></span> difference is an integral over the square
-<span><span class="MathJax_Preview">[t0, t1] \times [t0, t1] \subseteq \mathbb{R}^2</span><script type="math/tex">[t0, t1] \times [t0, t1] \subseteq \mathbb{R}^2</script></span> and is computed
+<span><span class="MathJax_Preview">[a, b] \times [a, b] \subseteq \mathbb{R}^2</span><script type="math/tex">[a, b] \times [a, b] \subseteq \mathbb{R}^2</script></span> and is computed
 using a tensor product of Gaussian nodes.</p>
 <h2 id="parameters">Parameters</h2>
 <dl>
-<dt><strong><code>t0</code></strong> :&ensp;<code>float</code></dt>
+<dt><strong><code>a</code></strong> :&ensp;<code>float</code></dt>
 <dd>the lower bound of the interval on which the eigenfunctions are defined</dd>
-<dt><strong><code>t1</code></strong> :&ensp;<code>float</code></dt>
+<dt><strong><code>b</code></strong> :&ensp;<code>float</code></dt>
 <dd>the upper bound of the interval on which the eigenfunctions are defined</dd>
 <dt><strong><code>kern</code></strong> :&ensp;<code>function</code></dt>
 <dd>the true covariance kernel with calling sequence kern(x, y)</dd>
 <dt><strong><code>coefs</code></strong> :&ensp;<code>array_like</code></dt>
-<dd>the Legendre expansions of the eigenfunctions of the KL-expansion</dd>
+<dd>n x m array of the Legendre expansions of the basis functions of the
+KL-expansion</dd>
 <dt><strong><code>nn</code></strong> :&ensp;<code>int</code></dt>
 <dd>the number of Gaussian nodes in each direction</dd>
 </dl>
@@ -645,25 +736,25 @@ using a tensor product of Gaussian nodes.</p>
 <summary>
 <span>Expand source code</span>
 </summary>
-<pre><code class="python">def check_l2_err(t0, t1, kern, coefs, nn):
-    &#39;&#39;&#39;
-    check the accruracy of a KL-expansion by computing the L2
-    norm of the difference between the true kernel and the 
-    effective kernel -- the outerproduct of eigenfunctions. That 
-    \(L^2\) difference is an integral over the square 
-    \([t0, t1] \\times [t0, t1] \subseteq \mathbb{R}^2\) and is computed
+<pre><code class="python">def check_l2_err(a, b, kern, coefs, nn):
+    &#39;&#39;&#39;check the accruracy of a KL-expansion by computing the L2
+    norm of the difference between the true kernel and the
+    effective kernel -- the outerproduct of eigenfunctions. That
+    \(L^2\) difference is an integral over the square
+    \([a, b] \\times [a, b] \subseteq \mathbb{R}^2\) and is computed
     using a tensor product of Gaussian nodes.
 
     Parameters
     ----------
-    t0: float
+    a: float
         the lower bound of the interval on which the eigenfunctions are defined
-    t1: float
+    b: float
         the upper bound of the interval on which the eigenfunctions are defined
     kern: function
         the true covariance kernel with calling sequence kern(x, y)
     coefs: array_like
-        the Legendre expansions of the eigenfunctions of the KL-expansion
+        n x m array of the Legendre expansions of the basis functions of the
+        KL-expansion
     nn: int
         the number of Gaussian nodes in each direction
 
@@ -676,7 +767,7 @@ using a tensor product of Gaussian nodes.</p>
     # get length of legendre expansions
     n, k = np.shape(coefs)
 
-    ts, whts = lege_nodes_weights(t0, t1, nn)
+    ts, whts = legendre_nodes_weights(a, b, nn)
 
     err = 0.0
     for i in range(nn):
@@ -685,8 +776,8 @@ using a tensor product of Gaussian nodes.</p>
             y = ts[j]
             dsum = 0.0
             for ijk in range(k):
-                f1 = lege_eval_exp(n-1, coefs[:,ijk], x)
-                f2 = lege_eval_exp(n-1, coefs[:,ijk], y)
+                f1 = legendre_eval_exp(n-1, coefs[:,ijk], x)
+                f2 = legendre_eval_exp(n-1, coefs[:,ijk], y)
                 dsum += f1*f2
             err += (dsum - kern(x, y))**2 * whts[i]*whts[j]
     err = np.sqrt(err)
@@ -695,19 +786,19 @@ using a tensor product of Gaussian nodes.</p>
 </details>
 </dd>
 <dt id="kl_exps.eigen_decomp"><code class="name flex">
-<span>def <span class="ident">eigen_decomp</span></span>(<span>n, t0, t1, kern, tol=1e-13)</span>
+<span>def <span class="ident">eigen_decomp</span></span>(<span>n, a, b, kern, tol=1e-13)</span>
 </code></dt>
 <dd>
 <div class="desc"><p>Evaluate the eigendecomposition of the integral operator </p>
-<p><span><span class="MathJax_Preview">Kf(x) = \int_{t0}^{t1} k(x, y) f(y) dy</span><script type="math/tex; mode=display">Kf(x) = \int_{t0}^{t1} k(x, y) f(y) dy</script></span></p>
+<p><span><span class="MathJax_Preview">Kf(x) = \int_{a}^{b} k(x, y) f(y) dy</span><script type="math/tex; mode=display">Kf(x) = \int_{a}^{b} k(x, y) f(y) dy</script></span></p>
 <p>using a Nystrom method. </p>
 <h2 id="parameters">Parameters</h2>
 <dl>
 <dt><strong><code>n</code></strong> :&ensp;<code>int</code></dt>
 <dd>the number of discretization nodes</dd>
-<dt><strong><code>t0</code></strong> :&ensp;<code>float</code></dt>
+<dt><strong><code>a</code></strong> :&ensp;<code>float</code></dt>
 <dd>the lower bound of the interval on which the eigenfunctions are defined</dd>
-<dt><strong><code>t1</code></strong> :&ensp;<code>float</code></dt>
+<dt><strong><code>b</code></strong> :&ensp;<code>float</code></dt>
 <dd>the upper bound of the interval on which the eigenfunctions are defined</dd>
 <dt><strong><code>kern</code></strong> :&ensp;<code>function</code></dt>
 <dd>the true covariance kernel with calling sequence kern(x, y)</dd>
@@ -720,20 +811,20 @@ returned by this function</dd>
 <dt><strong><code>k</code></strong> :&ensp;<code>int</code></dt>
 <dd>the number of eigenvalues with magnitude greater than <code>tol</code></dd>
 <dt><strong><code>lams</code></strong> :&ensp;<code>array_like</code></dt>
-<dd>eigenvalues of the integral operator</dd>
-<dt><strong><code>u</code></strong> :&ensp;<code>array_like</code></dt>
-<dd>eigenfunctions tabulated at gaussian nodes</dd>
+<dd>array of length n containing eigenvalues of the integral operator</dd>
+<dt><strong><code>vals</code></strong> :&ensp;<code>array_like</code></dt>
+<dd>n x n array with eigenfunctions tabulated at gaussian nodes</dd>
 <dt><strong><code>coefs</code></strong> :&ensp;<code>array_like</code></dt>
-<dd>legendre expansion of eigenvectors</dd>
+<dd>n x n array with legendre expansion of eigenvectors</dd>
 </dl></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
 </summary>
-<pre><code class="python">def eigen_decomp(n, t0, t1, kern, tol=10**(-13)):
+<pre><code class="python">def eigen_decomp(n, a, b, kern, tol=10**(-13)):
     &#34;&#34;&#34;Evaluate the eigendecomposition of the integral operator 
 
-      $$Kf(x) = \int_{t0}^{t1} k(x, y) f(y) dy$$
+      $$Kf(x) = \int_{a}^{b} k(x, y) f(y) dy$$
 
     using a Nystrom method. 
 
@@ -741,9 +832,9 @@ returned by this function</dd>
     ----------
     n: int
         the number of discretization nodes    
-    t0: float
+    a: float
         the lower bound of the interval on which the eigenfunctions are defined
-    t1: float
+    b: float
         the upper bound of the interval on which the eigenfunctions are defined
     kern: function
         the true covariance kernel with calling sequence kern(x, y)
@@ -756,66 +847,64 @@ returned by this function</dd>
     k: int
         the number of eigenvalues with magnitude greater than `tol`
     lams: array_like
-        eigenvalues of the integral operator
-    u: array_like
-        eigenfunctions tabulated at gaussian nodes
+        array of length n containing eigenvalues of the integral operator
+    vals: array_like
+        n x n array with eigenfunctions tabulated at gaussian nodes
     coefs: array_like
-        legendre expansion of eigenvectors
+        n x n array with legendre expansion of eigenvectors
     &#34;&#34;&#34;
 
-    xs, whts = lege_nodes_weights(t0, t1, n)
+    xs, whts = legendre_nodes_weights(a, b, n)
     
     # construct kernel matrix
     a = np.zeros((n,n))
     for i in range(n):
         for j in range(n):
-            a[i, j] = kern(xs[i], xs[j])
-            a[i, j] *= np.sqrt(whts[i]*whts[j])
+            a[i, j] = kern(xs[i], xs[j]) * np.sqrt(whts[i]*whts[j])
     
     # eigendecomposition of symmetric matrix a
-    lams, u = np.linalg.eigh(a)
+    lams, vals = np.linalg.eigh(a)
 
     # sort eigenvalues in descending order
     args = np.argsort(lams)[::-1]
     lams = lams[args]
-    u = u[:,args]
+    vals = vals[:,args]
     
     # truncate eigendecomposition 
     for i in range(n):
-        tmp = np.abs(lams[i]/lams[0])
-        if tmp &gt; tol:
+        if np.abs(lams[i]/lams[0]) &gt; tol:
             k = i
 
     # scale eigenfunctions back to tabulation space
     for i in range(n):
         for j in range(n):
-            u[i, j] = u[i, j]/np.sqrt(whts[i])
+            vals[i, j] = vals[i, j] / np.sqrt(whts[i])
 
     # convert eigenfunctions to coefficient space
-    uleg, vleg = lege_uv(n)
-    coefs = np.dot(uleg, u)
+    vals_to_coefs, _ = legendre_mats(n)
+    coefs = np.dot(vals_to_coefs, vals)
 
-    return k, lams, u, coefs</code></pre>
+    return k, lams, vals, coefs</code></pre>
 </details>
 </dd>
 <dt id="kl_exps.eval_eigenfunction"><code class="name flex">
-<span>def <span class="ident">eval_eigenfunction</span></span>(<span>coefs, j, t0, t1, x)</span>
+<span>def <span class="ident">eval_eigenfunction</span></span>(<span>coefs, j, a, b, x)</span>
 </code></dt>
 <dd>
 <div class="desc"><p>evaluate one basis function in the kl-expansion at one point.</p>
 <h2 id="parameters">Parameters</h2>
 <dl>
 <dt><strong><code>coefs</code></strong> :&ensp;<code>array_like</code></dt>
-<dd>an n x m np.array. Each column contains the Legendre expansion
+<dd>an n x m array, each column of which contains the Legendre expansion
 of one eigenfunction.</dd>
 <dt><strong><code>j</code></strong> :&ensp;<code>int</code></dt>
 <dd>the index of the eigenfunction to be evaluated</dd>
-<dt><strong><code>t0</code></strong> :&ensp;<code>float</code></dt>
+<dt><strong><code>a</code></strong> :&ensp;<code>float</code></dt>
 <dd>the lower bound of the interval on which the eigenfunction is defined</dd>
-<dt><strong><code>t1</code></strong> :&ensp;<code>float</code></dt>
+<dt><strong><code>b</code></strong> :&ensp;<code>float</code></dt>
 <dd>the upper bound of the interval on which the eigenfunction is defined</dd>
 <dt><strong><code>x</code></strong> :&ensp;<code>float</code></dt>
-<dd>the point in <span><span class="MathJax_Preview">[t0, t1]</span><script type="math/tex">[t0, t1]</script></span> at which to evaluate the eigenfunction</dd>
+<dd>the point in <span><span class="MathJax_Preview">[a, b]</span><script type="math/tex">[a, b]</script></span> at which to evaluate the eigenfunction</dd>
 </dl>
 <h2 id="returns">Returns</h2>
 <dl>
@@ -826,74 +915,74 @@ of one eigenfunction.</dd>
 <summary>
 <span>Expand source code</span>
 </summary>
-<pre><code class="python">def eval_eigenfunction(coefs, j, t0, t1, x):
+<pre><code class="python">def eval_eigenfunction(coefs, j, a, b, x):
     &#39;&#39;&#39;
     evaluate one basis function in the kl-expansion at one point.
 
     Parameters
     ----------
     coefs: array_like
-        an n x m np.array. Each column contains the Legendre expansion
-        of one eigenfunction. 
+        an n x m array, each column of which contains the Legendre expansion
+        of one eigenfunction.
     j: int
         the index of the eigenfunction to be evaluated
-    t0: float
+    a: float
         the lower bound of the interval on which the eigenfunction is defined
-    t1: float
+    b: float
         the upper bound of the interval on which the eigenfunction is defined
     x: float
-        the point in \([t0, t1]\) at which to evaluate the eigenfunction
+        the point in \([a, b]\) at which to evaluate the eigenfunction
 
     Returns
     -------
     f: float
-        the value of the eigenfunction 
-
+        the value of the eigenfunction
     &#39;&#39;&#39;
 
     n = coefs.shape[0]
 
-    # move x to [t0, t1]
-    x2 = -1.0 + 2.0*(x - t0)/(t1-t0)
+    # move x to [a, b]
+    x_scaled = -1.0 + 2.0*(x - a)/(b-a)
 
     # evaluate
-    f = lege_eval_exp(n-1, coefs[:,j], x2)
+    f = legendre_eval_exp(n-1, coefs[:,j], x_scaled)
 
     return f</code></pre>
 </details>
 </dd>
 <dt id="kl_exps.gp_reg_naive"><code class="name flex">
-<span>def <span class="ident">gp_reg_naive</span></span>(<span>kern, xs, ys, sigma2)</span>
+<span>def <span class="ident">gp_reg_naive</span></span>(<span>kern, xs, sigma2)</span>
 </code></dt>
 <dd>
 <div class="desc"><p>construct the full inverse of the covariance matrix that appears in
 Gaussian process regression by taking an eigendecomposition of the
-covariance matrix. this function exists for testing purposes. </p>
+covariance matrix &ndash; <span><span class="MathJax_Preview">K(x_i, x_j) + \sigma^2 * I</span><script type="math/tex">K(x_i, x_j) + \sigma^2 * I</script></span>. This function
+exists for testing purposes.</p>
 <h2 id="parameters">Parameters</h2>
 <dl>
 <dt><strong><code>kern</code></strong> :&ensp;<code>function</code></dt>
 <dd>the covariance kernel with calling sequence kern(x, y)</dd>
 <dt><strong><code>xs</code></strong> :&ensp;<code>array_like</code></dt>
 <dd>the independent variable of the observed data</dd>
-<dt><strong><code>ys</code></strong> :&ensp;<code>array_like</code></dt>
-<dd>the dependent variables of the observed data</dd>
 <dt><strong><code>sigma2</code></strong> :&ensp;<code>float</code></dt>
 <dd>the residual variance (nugget)</dd>
 </dl>
 <h2 id="returns">Returns</h2>
 <dl>
 <dt><strong><code>c_inv</code></strong> :&ensp;<code>array_like</code></dt>
-<dd>the inverse of the covariance matrix</dd>
+<dd>n x n array where n is the length of xs and ys. this matrix is
+the inverse of the covariance matrix</dd>
 </dl></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
 </summary>
-<pre><code class="python">def gp_reg_naive(kern, xs, ys, sigma2):
+<pre><code class="python">def gp_reg_naive(kern, xs, sigma2):
     &#39;&#39;&#39;
-    construct the full inverse of the covariance matrix that appears in 
-    Gaussian process regression by taking an eigendecomposition of the 
-    covariance matrix. this function exists for testing purposes. 
+    construct the full inverse of the covariance matrix that appears in
+    Gaussian process regression by taking an eigendecomposition of the
+    covariance matrix -- \(K(x_i, x_j) + \sigma^2 * I\). This function
+    exists for testing purposes.
 
     Parameters
     ----------
@@ -901,15 +990,14 @@ covariance matrix. this function exists for testing purposes. </p>
         the covariance kernel with calling sequence kern(x, y)
     xs: array_like
         the independent variable of the observed data
-    ys: array_like
-        the dependent variables of the observed data
     sigma2: float
         the residual variance (nugget)
 
     Returns
     -------
     c_inv: array_like
-        the inverse of the covariance matrix 
+        n x n array where n is the length of xs and ys. this matrix is
+        the inverse of the covariance matrix
     &#39;&#39;&#39;
 
     nn = np.shape(xs)[0]
@@ -934,7 +1022,7 @@ covariance matrix. this function exists for testing purposes. </p>
 <span>def <span class="ident">kernel_matern32</span></span>(<span>x, y, el)</span>
 </code></dt>
 <dd>
-<div class="desc"><p>squared exponential kernel</p>
+<div class="desc"><p>matern 3/2 kernel </p>
 <h2 id="parameters">Parameters</h2>
 <dl>
 <dt><strong><code>x</code></strong> :&ensp;<code>float</code></dt>
@@ -955,7 +1043,7 @@ covariance matrix. this function exists for testing purposes. </p>
 </summary>
 <pre><code class="python">def kernel_matern32(x, y, el):
     &#39;&#39;&#39;
-    squared exponential kernel
+    matern 3/2 kernel 
 
     Parameters
     ----------
@@ -1020,130 +1108,145 @@ covariance matrix. this function exists for testing purposes. </p>
 </details>
 </dd>
 <dt id="kl_exps.kl_gp_reg"><code class="name flex">
-<span>def <span class="ident">kl_gp_reg</span></span>(<span>n, kern, el, t0, t1, xs, ys, sigma2, check_err=False)</span>
+<span>def <span class="ident">kl_gp_reg</span></span>(<span>n, kern, el, a, b, xs, ys, sigma2, check_err=False)</span>
 </code></dt>
 <dd>
-<div class="desc"><p>evaluate the conditional mean and covariance of a gaussian process using
-KL-expansions. That is, find the mean coefficients in the KL-expansion and
-the covariance of those coefficients </p>
+<div class="desc"><p>evaluate the conditional mean and covariance of a Gaussian process
+regression using KL-expansions. That is, find the mean coefficients
+in the KL-expansion and the covariance of those coefficients</p>
 <h2 id="parameters">Parameters</h2>
 <dl>
 <dt><strong><code>n</code></strong> :&ensp;<code>int</code></dt>
 <dd>the number of discretization nodes</dd>
 <dt><strong><code>kern</code></strong> :&ensp;<code>function</code></dt>
-<dd>the covariance kernel (a function)</dd>
+<dd>the covariance kernel (a function) with calling sequence
+<code>kern(x, y, el)</code> where <code>el</code> is the timescale hyperparameter</dd>
+<dt><strong><code>el</code></strong> :&ensp;<code>float</code></dt>
+<dd>timescale of the covariance kernel</dd>
+<dt><strong><code>a</code></strong> :&ensp;<code>float</code></dt>
+<dd>the lower bound of the interval on which the Gaussian process is defined</dd>
+<dt><strong><code>b</code></strong> :&ensp;<code>float</code></dt>
+<dd>the upper bound of the interval on which the Gaussian process is defined</dd>
 <dt><strong><code>xs</code></strong> :&ensp;<code>array_like</code></dt>
 <dd>the independent variable of the data</dd>
 <dt><strong><code>ys</code></strong> :&ensp;<code>array_like</code></dt>
 <dd>the dependent variable of the data, ie the observations</dd>
 <dt><strong><code>sigma2</code></strong> :&ensp;<code>float</code></dt>
 <dd>the residual variance</dd>
+<dt><strong><code>check_err</code></strong> :&ensp;<code>bool</code></dt>
+<dd>when set to True, this function will compute the L2 accuracy of the
+effective covariance kernel compared to the true covariance kernel</dd>
 </dl>
 <h2 id="returns">Returns</h2>
 <dl>
 <dt><strong><code>lams</code></strong> :&ensp;<code>array_like</code></dt>
 <dd>the eigenvalues of the integral operator that's discretized</dd>
 <dt><strong><code>coefs</code></strong> :&ensp;<code>array_like</code></dt>
-<dd>the expansion coefficients of the eigenfunctions in a Legendre basis</dd>
+<dd>n x k array with the expansion coefficients in a Legendre basis
+of the KL-expansion basis functions</dd>
 <dt><strong><code>coefs_mean</code></strong> :&ensp;<code>array_like</code></dt>
-<dd>the posterior mean, the expectation of the coefficients in a
+<dd>arry of length k. the expectation of the coefficients in a
 kl-expansion basis</dd>
 <dt><strong><code>coefs_cov</code></strong> :&ensp;<code>array_like</code></dt>
-<dd>the covariance of the posterior coefficients</dd>
+<dd>k x k array. the covariance of the posterior coefficients</dd>
 </dl></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
 </summary>
-<pre><code class="python">def kl_gp_reg(n, kern, el, t0, t1, xs, ys, sigma2, check_err=False):
+<pre><code class="python">def kl_gp_reg(n, kern, el, a, b, xs, ys, sigma2, check_err=False):
     &#39;&#39;&#39;
-    evaluate the conditional mean and covariance of a gaussian process using
-    KL-expansions. That is, find the mean coefficients in the KL-expansion and 
-    the covariance of those coefficients 
+    evaluate the conditional mean and covariance of a Gaussian process
+    regression using KL-expansions. That is, find the mean coefficients
+    in the KL-expansion and the covariance of those coefficients
 
     Parameters
     ----------
     n: int
         the number of discretization nodes
     kern: function
-        the covariance kernel (a function)
+        the covariance kernel (a function) with calling sequence
+        `kern(x, y, el)` where `el` is the timescale hyperparameter
+    el: float
+        timescale of the covariance kernel
+    a: float
+        the lower bound of the interval on which the Gaussian process is defined
+    b: float
+        the upper bound of the interval on which the Gaussian process is defined
     xs: array_like
         the independent variable of the data
     ys: array_like
         the dependent variable of the data, ie the observations
     sigma2: float
-        the residual variance 
+        the residual variance
+    check_err: bool
+        when set to True, this function will compute the L2 accuracy of the
+        effective covariance kernel compared to the true covariance kernel
 
     Returns
     -------
     lams: array_like
         the eigenvalues of the integral operator that&#39;s discretized
     coefs: array_like
-        the expansion coefficients of the eigenfunctions in a Legendre basis
+        n x k array with the expansion coefficients in a Legendre basis
+        of the KL-expansion basis functions
     coefs_mean: array_like
-        the posterior mean, the expectation of the coefficients in a 
+        arry of length k. the expectation of the coefficients in a
         kl-expansion basis
     coefs_cov: array_like
-        the covariance of the posterior coefficients
+        k x k array. the covariance of the posterior coefficients
     &#39;&#39;&#39;
 
     # transform xs and el to [-1, 1]
-    xs2 = -1.0 + 2.0*(xs - t0)/(t1-t0)
-    el2 = 2.0*el/(t1-t0)
-    def kern2(x, y): return kern(x, y, el2)
+    xs_scaled = -1.0 + 2.0*(xs - a)/(b-a)
+    el2_scaled = 2.0*el/(b-a)
+    def kern_scaled(x, y):
+        return kern(x, y, el2_scaled)
 
     # number of data points
     nn = np.shape(xs)[0]
 
     # eigen decomposition of integral operator
-    t0 = -1.0
-    t1 = 1.0
-    k, lams, u, coefs = eigen_decomp(n, t0, t1, kern2)
+    k, lams, _, coefs = eigen_decomp(n, a=-1.0, b=1.0, kern=kern_scaled)
     lams = lams[:k]
     coefs = coefs[:,:k]
 
     # scale eigenfunctions
-    for i in range(n):
-        for j in range(k):
-            coefs[i, j] = coefs[i, j] * np.sqrt(lams[j])
+    coefs *= np.sqrt(lams)
 
     # evaluate legendre polynomials at data points for constructing a
     pols = np.zeros((nn, n))
     for i in range(nn):
-        pols[i] = lege_pols(xs2[i], n-1)
+        pols[i] = legendre_pols(xs_scaled[i], n-1)
 
     # construct a
     a = np.dot(pols, coefs)
-    
-    # eigendecomposition of of ata 
-    lams_ata, u = np.linalg.eigh(np.dot(a.T, a))
-    ###print(np.dot(a.T, a))
 
-    # compute posterior mean 
+    # eigendecomposition of of ata
+    lams_ata, u = np.linalg.eigh(np.dot(a.T, a))
+
+    # compute posterior mean
     aty = np.dot(a.T, ys)
-    d_inv = 1 / (sigma2 + lams_ata)
-    d_inv = np.diag(d_inv)
+    d_inv = np.diag(1 / (sigma2 + lams_ata))
     coefs_mean = np.dot(u, np.dot(d_inv, np.dot(u.T, aty)))
 
-    # compute posterior covariance 
+    # compute posterior covariance
     d_inv = sigma2*d_inv
     coefs_cov = np.dot(u, np.dot(d_inv, u.T))
 
-    # check accuracy by taking L2 difference between the true and effective 
+    # check accuracy by taking L2 difference between the true and effective
     # covariance kernel
     if check_err:
-        nn1 = 21
-        err1 = check_l2_err(t0, t1, kern2, coefs, nn1)
-        nn2 = 2*nn1
-        err2 = check_l2_err(t0, t1, kern2, coefs, nn2)
+        err1 = check_l2_err(a, b, kern_scaled, coefs, nn=21)
+        err2 = check_l2_err(a, b, kern_scaled, coefs, nn=42)
         print(f&#39;L2 error of effective kernel: {err1}&#39;)
         print(f&#39;error accuracy: {err2 - err1}&#39;)
 
     return lams, coefs, coefs_mean, coefs_cov</code></pre>
 </details>
 </dd>
-<dt id="kl_exps.lege_eval_exp"><code class="name flex">
-<span>def <span class="ident">lege_eval_exp</span></span>(<span>n, lege_coefs, x)</span>
+<dt id="kl_exps.legendre_eval_exp"><code class="name flex">
+<span>def <span class="ident">legendre_eval_exp</span></span>(<span>n, legendre_coefs, x)</span>
 </code></dt>
 <dd>
 <div class="desc"><p>evaluate a legendre expansion at one point using the three-term recurrence
@@ -1152,8 +1255,8 @@ forumula</p>
 <dl>
 <dt><strong><code>n</code></strong> :&ensp;<code>int</code></dt>
 <dd>the length of the Legendre expansion</dd>
-<dt><strong><code>lege_coefs</code></strong> :&ensp;<code>array_like</code></dt>
-<dd>the coefficients in the Legendre expansion</dd>
+<dt><strong><code>legendre_coefs</code></strong> :&ensp;<code>array_like</code></dt>
+<dd>array containing the coefficients in the Legendre expansion</dd>
 <dt><strong><code>x</code></strong> :&ensp;<code>float</code></dt>
 <dd>the point at which to evaluate the Legendre expansion</dd>
 </dl>
@@ -1166,57 +1269,126 @@ forumula</p>
 <summary>
 <span>Expand source code</span>
 </summary>
-<pre><code class="python">def lege_eval_exp(n, lege_coefs, x):
+<pre><code class="python">def legendre_eval_exp(n, legendre_coefs, x):
     &#39;&#39;&#39;
-    evaluate a legendre expansion at one point using the three-term recurrence 
+    evaluate a legendre expansion at one point using the three-term recurrence
     forumula
 
     Parameters
     ----------
     n: int
         the length of the Legendre expansion
-    lege_coefs: array_like
-        the coefficients in the Legendre expansion
+    legendre_coefs: array_like
+        array containing the coefficients in the Legendre expansion
     x: float
         the point at which to evaluate the Legendre expansion
 
     Returns
     -------
     f: float
-        the value of the expansion 
+        the value of the expansion
     &#39;&#39;&#39;
 
-    # initialize recurrence 
+    # initialize recurrence
     pjm2 = 1
     pjm1 = x
 
     # first two terms
-    f = lege_coefs[0]*pjm2+lege_coefs[1]*pjm1
-    der = lege_coefs[1]
+    f = legendre_coefs[0]*pjm2+legendre_coefs[1]*pjm1
 
-    # recurrence 
+    # recurrence
     for j in range(2, n+1):
         pj=  ((2*j-1)*x*pjm1-(j-1)*pjm2 ) / j
-        f=f+lege_coefs[j]*pj
+        f=f+legendre_coefs[j]*pj
         pjm2 = pjm1
         pjm1 = pj
 
     return f</code></pre>
 </details>
 </dd>
-<dt id="kl_exps.lege_nodes_weights"><code class="name flex">
-<span>def <span class="ident">lege_nodes_weights</span></span>(<span>t0, t1, n)</span>
+<dt id="kl_exps.legendre_mats"><code class="name flex">
+<span>def <span class="ident">legendre_mats</span></span>(<span>n)</span>
+</code></dt>
+<dd>
+<div class="desc"><p>construct matrices for transforming coefficients in a Legendre
+expansion to tabulations at Gaussian nodes and vice versa</p>
+<h2 id="parameters">Parameters</h2>
+<dl>
+<dt><strong><code>n</code></strong> :&ensp;<code>int</code></dt>
+<dd>the size of the square matrices to be returned</dd>
+</dl>
+<h2 id="returns">Returns</h2>
+<dl>
+<dt><strong><code>coefs_to_vals</code></strong> :&ensp;<code>array_like</code></dt>
+<dd>n x n matrix that transforms coefficients in legendre expansion
+to its values at Gaussian nodes</dd>
+<dt><strong><code>vals_to_coefs</code></strong> :&ensp;<code>array_like</code></dt>
+<dd>n x n matrix that transforms values at Gaussian nodes to
+Legendre expansions</dd>
+</dl></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def legendre_mats(n):
+    &#39;&#39;&#39;
+    construct matrices for transforming coefficients in a Legendre 
+    expansion to tabulations at Gaussian nodes and vice versa
+
+    Parameters
+    ----------
+    n: int
+        the size of the square matrices to be returned
+
+    Returns
+    -------
+    coefs_to_vals: array_like
+        n x n matrix that transforms coefficients in legendre expansion 
+        to its values at Gaussian nodes
+    vals_to_coefs: array_like
+        n x n matrix that transforms values at Gaussian nodes to 
+        Legendre expansions
+    &#39;&#39;&#39;
+    
+    # initialize matrices
+    vals_to_coefs = np.zeros((n,n))
+    coefs_to_vals = np.zeros((n,n))
+
+    # construct order-n Gaussian nodes and weights
+    a = -1.0
+    b = 1.0
+    x, whts = legendre_nodes_weights(a, b, n)
+
+    for i in range(n):
+        coefs_to_vals[i] = legendre_pols(x[i], n-1)
+ 
+    # now, v converts coefficients of a legendre expansion
+    # into its values at the gaussian nodes. construct its
+    # inverse u, converting the values of a function at
+    # gaussian nodes into the coefficients of a legendre
+    # expansion of that function
+    for i in range(n):
+        d = 1.0
+        d = d * (2.0 * (i+1) - 1.0) / 2.0
+        for j in range(n):
+            vals_to_coefs[i,j]=coefs_to_vals[j,i]*whts[j]*d
+
+    return vals_to_coefs, coefs_to_vals</code></pre>
+</details>
+</dd>
+<dt id="kl_exps.legendre_nodes_weights"><code class="name flex">
+<span>def <span class="ident">legendre_nodes_weights</span></span>(<span>a, b, n)</span>
 </code></dt>
 <dd>
 <div class="desc"><p>Compute order-n Gaussian nodes and weights</p>
 <h2 id="parameters">Parameters</h2>
 <dl>
+<dt><strong><code>a</code></strong> :&ensp;<code>float</code></dt>
+<dd>the lower bound of the interval on which the Gaussian nodes are defined</dd>
+<dt><strong><code>b</code></strong> :&ensp;<code>float</code></dt>
+<dd>the upper bound of the interval on which the Gaussian nodes are defined</dd>
 <dt><strong><code>n</code></strong> :&ensp;<code>int</code></dt>
 <dd>the order of Gaussian nodes</dd>
-<dt><strong><code>t0</code></strong> :&ensp;<code>float</code></dt>
-<dd>the lower bound of the interval on which the Gaussian nodes are defined</dd>
-<dt><strong><code>t1</code></strong> :&ensp;<code>float</code></dt>
-<dd>the upper bound of the interval on which the Gaussian nodes are defined</dd>
 </dl>
 <h2 id="returns">Returns</h2>
 <dl>
@@ -1230,18 +1402,18 @@ interval specified in the calling sequence</dd>
 <summary>
 <span>Expand source code</span>
 </summary>
-<pre><code class="python">def lege_nodes_weights(t0, t1, n):
+<pre><code class="python">def legendre_nodes_weights(a, b, n):
     &#39;&#39;&#39;
     Compute order-n Gaussian nodes and weights
 
     Parameters
     ----------
+    a: float
+        the lower bound of the interval on which the Gaussian nodes are defined
+    b: float
+        the upper bound of the interval on which the Gaussian nodes are defined
     n: int
         the order of Gaussian nodes
-    t0: float
-        the lower bound of the interval on which the Gaussian nodes are defined
-    t1: float
-        the upper bound of the interval on which the Gaussian nodes are defined
 
     Returns
     -------
@@ -1263,19 +1435,21 @@ interval specified in the calling sequence</dd>
     # scale weights and scale and shift nodes
     for i in range(n):
         tmp = (xleg[i] + 1.0)/2.0
-        xs[i] = t0 + (t1-t0)*tmp
-        weights[i] = wleg[i]*(t1-t0)/2.0
+        xs[i] = a + (b-a)*tmp
+        weights[i] = wleg[i]*(b-a)/2.0
 
     return xs, weights</code></pre>
 </details>
 </dd>
-<dt id="kl_exps.lege_pols"><code class="name flex">
-<span>def <span class="ident">lege_pols</span></span>(<span>x, n)</span>
+<dt id="kl_exps.legendre_pols"><code class="name flex">
+<span>def <span class="ident">legendre_pols</span></span>(<span>x, n)</span>
 </code></dt>
 <dd>
 <div class="desc"><p>Evaluate the Legendre polynomials of order 0,1,2,&hellip;,n at one point</p>
 <h2 id="parameters">Parameters</h2>
 <dl>
+<dt><strong><code>n</code></strong> :&ensp;<code>float</code></dt>
+<dd>the point at which to evluate the polynomials</dd>
 <dt><strong><code>n</code></strong> :&ensp;<code>int</code></dt>
 <dd>the order of the largest Legendre polynomial to be evaluated</dd>
 </dl>
@@ -1288,12 +1462,14 @@ interval specified in the calling sequence</dd>
 <summary>
 <span>Expand source code</span>
 </summary>
-<pre><code class="python">def lege_pols(x, n):
+<pre><code class="python">def legendre_pols(x, n):
     &#39;&#39;&#39;
     Evaluate the Legendre polynomials of order 0,1,2,...,n at one point
 
     Parameters
     ----------
+    n: float
+        the point at which to evluate the polynomials
     n: int
         the order of the largest Legendre polynomial to be evaluated
 
@@ -1307,8 +1483,10 @@ interval specified in the calling sequence</dd>
     pk = 1.0 
     pkp1 = x 
 
-    if (n == 0): return np.array([1.0])
-    if (n == 1): return np.array([1.0, x])
+    if n == 0: 
+        return np.array([1.0])
+    if n == 1: 
+        return np.array([1.0, x])
 
     # n is greater than 2. conduct recursion
     pols = np.zeros(n+1)
@@ -1323,74 +1501,6 @@ interval specified in the calling sequence</dd>
     return pols</code></pre>
 </details>
 </dd>
-<dt id="kl_exps.lege_uv"><code class="name flex">
-<span>def <span class="ident">lege_uv</span></span>(<span>n)</span>
-</code></dt>
-<dd>
-<div class="desc"><p>construct matrices for transforming coefficients in a Legendre
-expansion to tabulations at Gaussian nodes and vice versa</p>
-<h2 id="parameters">Parameters</h2>
-<dl>
-<dt><strong><code>n</code></strong> :&ensp;<code>int</code></dt>
-<dd>the size of the square matrices to be returned</dd>
-</dl>
-<h2 id="returns">Returns</h2>
-<dl>
-<dt><strong><code>v</code></strong> :&ensp;<code>array_like</code></dt>
-<dd>transforms coefficients in legendre expansion to its values at
-Gaussian nodes</dd>
-<dt><strong><code>u</code></strong> :&ensp;<code>array_like</code></dt>
-<dd>transforms values at Gaussian nodes to Legendre expansions</dd>
-</dl></div>
-<details class="source">
-<summary>
-<span>Expand source code</span>
-</summary>
-<pre><code class="python">def lege_uv(n):
-    &#39;&#39;&#39;
-    construct matrices for transforming coefficients in a Legendre 
-    expansion to tabulations at Gaussian nodes and vice versa
-
-    Parameters
-    ----------
-    n: int
-        the size of the square matrices to be returned
-
-    Returns
-    -------
-    v: array_like
-        transforms coefficients in legendre expansion to its values at 
-        Gaussian nodes
-    u: array_like
-        transforms values at Gaussian nodes to Legendre expansions
-    &#39;&#39;&#39;
-    
-    # initialize matrices
-    u = np.zeros((n,n))
-    v = np.zeros((n,n))
-
-    # construct order-n Gaussian nodes and weights
-    t0 = -1.0
-    t1 = 1.0
-    x, whts = lege_nodes_weights(t0, t1, n)
-
-    for i in range(n):
-        v[i] = lege_pols(x[i], n-1)
- 
-    # now, v converts coefficients of a legendre expansion
-    # into its values at the gaussian nodes. construct its
-    # inverse u, converting the values of a function at
-    # gaussian nodes into the coefficients of a legendre
-    # expansion of that function
-    for i in range(n):
-        d = 1.0
-        d = d * (2.0 * (i+1) - 1.0) / 2.0
-        for j in range(n):
-            u[i,j]=v[j,i]*whts[j]*d
-
-    return u, v</code></pre>
-</details>
-</dd>
 </dl>
 </section>
 <section>
@@ -1401,31 +1511,7 @@ Gaussian nodes</dd>
 <span>(</span><span>methodName='runTest')</span>
 </code></dt>
 <dd>
-<div class="desc"><p>A class whose instances are single test cases.</p>
-<p>By default, the test code itself should be placed in a method named
-'runTest'.</p>
-<p>If the fixture may be used for many test cases, create as
-many test methods as are needed. When instantiating such a TestCase
-subclass, specify in the constructor arguments the name of the test method
-that the instance is to execute.</p>
-<p>Test authors should subclass TestCase for their own tests. Construction
-and deconstruction of the test's environment ('fixture') can be
-implemented by overriding the 'setUp' and 'tearDown' methods respectively.</p>
-<p>If it is necessary to override the <strong>init</strong> method, the base class
-<strong>init</strong> method must always be called. It is important that subclasses
-should not change the signature of their <strong>init</strong> method, since instances
-of the classes are instantiated automatically by parts of the framework
-in order to be run.</p>
-<p>When subclassing TestCase, you can set these attributes:
-* failureException: determines which exception will be raised when
-the instance's assertion methods fail; test methods raising this
-exception will be deemed to have 'failed' rather than 'errored'.
-* longMessage: determines whether long messages (including repr of
-objects used in assert methods) will be printed on failure in <em>addition</em>
-to any explicit message passed.
-* maxDiff: sets the maximum length of a diff in failure messages
-by assert methods using difflib. It is looked up as an instance
-attribute so can be configured by individual tests if required.</p>
+<div class="desc"><p>For unit testing</p>
 <p>Create an instance of the class that will use the named test
 method when executed. Raises a ValueError if the instance does
 not have a method with the specified name.</p></div>
@@ -1434,36 +1520,45 @@ not have a method with the specified name.</p></div>
 <span>Expand source code</span>
 </summary>
 <pre><code class="python">class TestKL(unittest.TestCase):
+    &#34;&#34;&#34;For unit testing&#34;&#34;&#34;
     def test1(self):
+        &#34;&#34;&#34;in this testing routine, we compare the results of Gaussian
+        process regression using KL expansions with the same procedure
+        using the straightforward naive algorithm that requires o(n^3)
+        operations.
+        &#34;&#34;&#34;
     
         np.random.seed(1)
     
         # set kernel
         el = 0.5
-        def kern(x, y): return kernel_se(x, y, el)
+        def kern(x, y):
+            return kernel_se(x, y, el)
     
-        # set residual variance 
+        # set residual variance
         sigma2 = 0.7
         
         # construct data and true solution
-        t0 = -1.0
-        t1 = 1.0
+        a = -1.0
+        b = 1.0
         nn = 10
-        xs = np.linspace(t0, t1, nn)
+        xs = np.linspace(a, b, nn)
         eps = np.random.normal(size=nn)
-        ys = np.cos(3*np.exp(xs/(t1-t0))) + eps
+        ys = np.cos(3*np.exp(xs/(b-a))) + eps
         nn_true = 100
-        xs_true = np.linspace(t0, t1, nn_true)
-        ys_true = np.cos(3*np.exp(xs_true/(t1-t0)))
+        xs_true = np.linspace(a, b, nn_true)
+        ys_true = np.cos(3*np.exp(xs_true/(b-a)))
         
-        # use kl expansions compute conditional mean and covariance of coefficients 
+        # use kl-expansions to compute conditional mean and covariance
+        # of a Gaussian process. the mean and covariance are defined over
+        # the space of coefficients in the kl-expansion
         n = 100
-        lams, coefs, coefs_mean, coefs_cov = kl_gp_reg(n, kernel_se, el, 
-            t0, t1, xs, ys, sigma2, check_err=False)
+        lams, coefs, coefs_mean, coefs_cov = kl_gp_reg(n, kernel_se, el,
+            a, b, xs, ys, sigma2, check_err=False)
     
         # set points at which to evaluate conditional mean
         nn_sol = 100
-        ts_sol = np.linspace(t0, t1, nn_sol)
+        ts_sol = np.linspace(a, b, nn_sol)
         ys_sol = np.zeros_like(ts_sol)
     
         # tabulate conditional mean
@@ -1471,7 +1566,7 @@ not have a method with the specified name.</p></div>
         for i in range(nn_sol):
             f = 0.0
             for j in range(k):
-                fj = eval_eigenfunction(coefs, j, t0, t1, ts_sol[i])
+                fj = eval_eigenfunction(coefs, j, a, b, ts_sol[i])
                 f = f + fj * coefs_mean[j]
             ys_sol[i] = f
     
@@ -1483,36 +1578,36 @@ not have a method with the specified name.</p></div>
     
         # compute variance at the points where mean was tabulated
         fs = np.zeros(k)
-        vars = np.zeros(nn_sol)
+        variance = np.zeros(nn_sol)
         for i in range(nn_sol):
             for j in range(k):
-                fs[j] = eval_eigenfunction(coefs, j, t0, t1, ts_sol[i])
-            vars[i] = np.dot(fs.T, np.dot(coefs_cov, fs.T))
-    
+                fs[j] = eval_eigenfunction(coefs, j, a, b, ts_sol[i])
+            variance[i] = np.dot(fs.T, np.dot(coefs_cov, fs.T))
     
         # now check whether using a naive, o(n^3)
-        # straightforward algorithm gets the same solution as the 
-        # kl-expansion solution. 
+        # straightforward algorithm gets the same solution as the
+        # kl-expansion solution.
     
         # construct the vector C^{-1}*y
-        c_inv = gp_reg_naive(kern, xs, ys, sigma2)
+        c_inv = gp_reg_naive(kern, xs, sigma2)
         k_inv_y = np.dot(c_inv, ys)
       
         # tabulate mean at the same points where kl expansions conditional mean
-        # was tabulated 
+        # was tabulated
         tmp2 = np.zeros((nn_sol, nn))
         for i in range(nn_sol):
             tmp2[i] = kern(ts_sol[i], xs)
         ys_sol2 = np.dot(tmp2, k_inv_y)
     
         # tabulate variances at each point
-        vars2 = np.zeros(nn_sol)
+        variance2 = np.zeros(nn_sol)
         for i in range(nn_sol):
-            vars2[i] = kern(0.0, 0.0) - np.dot(tmp2[i], np.dot(c_inv, tmp2[i].T))
+            variance2[i] = kern(0.0, 0.0) - np.dot(tmp2[i],
+                                                   np.dot(c_inv, tmp2[i].T))
         
-        # assert that the solutions obtained via kl expansions and 
+        # assert that the solutions obtained via kl expansions and
         # via naive implementation agree to several digits
-        np.testing.assert_allclose(vars, vars2, atol=1e-10)
+        np.testing.assert_allclose(variance, variance2, atol=1e-10)
         np.testing.assert_allclose(ys_sol, ys_sol2, atol=1e-10)</code></pre>
 </details>
 <h3>Ancestors</h3>
@@ -1525,41 +1620,52 @@ not have a method with the specified name.</p></div>
 <span>def <span class="ident">test1</span></span>(<span>self)</span>
 </code></dt>
 <dd>
-<div class="desc"></div>
+<div class="desc"><p>in this testing routine, we compare the results of Gaussian
+process regression using KL expansions with the same procedure
+using the straightforward naive algorithm that requires o(n^3)
+operations.</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
 </summary>
 <pre><code class="python">def test1(self):
+    &#34;&#34;&#34;in this testing routine, we compare the results of Gaussian
+    process regression using KL expansions with the same procedure
+    using the straightforward naive algorithm that requires o(n^3)
+    operations.
+    &#34;&#34;&#34;
 
     np.random.seed(1)
 
     # set kernel
     el = 0.5
-    def kern(x, y): return kernel_se(x, y, el)
+    def kern(x, y):
+        return kernel_se(x, y, el)
 
-    # set residual variance 
+    # set residual variance
     sigma2 = 0.7
     
     # construct data and true solution
-    t0 = -1.0
-    t1 = 1.0
+    a = -1.0
+    b = 1.0
     nn = 10
-    xs = np.linspace(t0, t1, nn)
+    xs = np.linspace(a, b, nn)
     eps = np.random.normal(size=nn)
-    ys = np.cos(3*np.exp(xs/(t1-t0))) + eps
+    ys = np.cos(3*np.exp(xs/(b-a))) + eps
     nn_true = 100
-    xs_true = np.linspace(t0, t1, nn_true)
-    ys_true = np.cos(3*np.exp(xs_true/(t1-t0)))
+    xs_true = np.linspace(a, b, nn_true)
+    ys_true = np.cos(3*np.exp(xs_true/(b-a)))
     
-    # use kl expansions compute conditional mean and covariance of coefficients 
+    # use kl-expansions to compute conditional mean and covariance
+    # of a Gaussian process. the mean and covariance are defined over
+    # the space of coefficients in the kl-expansion
     n = 100
-    lams, coefs, coefs_mean, coefs_cov = kl_gp_reg(n, kernel_se, el, 
-        t0, t1, xs, ys, sigma2, check_err=False)
+    lams, coefs, coefs_mean, coefs_cov = kl_gp_reg(n, kernel_se, el,
+        a, b, xs, ys, sigma2, check_err=False)
 
     # set points at which to evaluate conditional mean
     nn_sol = 100
-    ts_sol = np.linspace(t0, t1, nn_sol)
+    ts_sol = np.linspace(a, b, nn_sol)
     ys_sol = np.zeros_like(ts_sol)
 
     # tabulate conditional mean
@@ -1567,7 +1673,7 @@ not have a method with the specified name.</p></div>
     for i in range(nn_sol):
         f = 0.0
         for j in range(k):
-            fj = eval_eigenfunction(coefs, j, t0, t1, ts_sol[i])
+            fj = eval_eigenfunction(coefs, j, a, b, ts_sol[i])
             f = f + fj * coefs_mean[j]
         ys_sol[i] = f
 
@@ -1579,36 +1685,36 @@ not have a method with the specified name.</p></div>
 
     # compute variance at the points where mean was tabulated
     fs = np.zeros(k)
-    vars = np.zeros(nn_sol)
+    variance = np.zeros(nn_sol)
     for i in range(nn_sol):
         for j in range(k):
-            fs[j] = eval_eigenfunction(coefs, j, t0, t1, ts_sol[i])
-        vars[i] = np.dot(fs.T, np.dot(coefs_cov, fs.T))
-
+            fs[j] = eval_eigenfunction(coefs, j, a, b, ts_sol[i])
+        variance[i] = np.dot(fs.T, np.dot(coefs_cov, fs.T))
 
     # now check whether using a naive, o(n^3)
-    # straightforward algorithm gets the same solution as the 
-    # kl-expansion solution. 
+    # straightforward algorithm gets the same solution as the
+    # kl-expansion solution.
 
     # construct the vector C^{-1}*y
-    c_inv = gp_reg_naive(kern, xs, ys, sigma2)
+    c_inv = gp_reg_naive(kern, xs, sigma2)
     k_inv_y = np.dot(c_inv, ys)
   
     # tabulate mean at the same points where kl expansions conditional mean
-    # was tabulated 
+    # was tabulated
     tmp2 = np.zeros((nn_sol, nn))
     for i in range(nn_sol):
         tmp2[i] = kern(ts_sol[i], xs)
     ys_sol2 = np.dot(tmp2, k_inv_y)
 
     # tabulate variances at each point
-    vars2 = np.zeros(nn_sol)
+    variance2 = np.zeros(nn_sol)
     for i in range(nn_sol):
-        vars2[i] = kern(0.0, 0.0) - np.dot(tmp2[i], np.dot(c_inv, tmp2[i].T))
+        variance2[i] = kern(0.0, 0.0) - np.dot(tmp2[i],
+                                               np.dot(c_inv, tmp2[i].T))
     
-    # assert that the solutions obtained via kl expansions and 
+    # assert that the solutions obtained via kl expansions and
     # via naive implementation agree to several digits
-    np.testing.assert_allclose(vars, vars2, atol=1e-10)
+    np.testing.assert_allclose(variance, variance2, atol=1e-10)
     np.testing.assert_allclose(ys_sol, ys_sol2, atol=1e-10)</code></pre>
 </details>
 </dd>
@@ -1624,7 +1730,7 @@ not have a method with the specified name.</p></div>
 </div>
 <ul id="index">
 <li><h3><a href="#header-functions">Functions</a></h3>
-<ul class="two-column">
+<ul class="">
 <li><code><a title="kl_exps.check_l2_err" href="#kl_exps.check_l2_err">check_l2_err</a></code></li>
 <li><code><a title="kl_exps.eigen_decomp" href="#kl_exps.eigen_decomp">eigen_decomp</a></code></li>
 <li><code><a title="kl_exps.eval_eigenfunction" href="#kl_exps.eval_eigenfunction">eval_eigenfunction</a></code></li>
@@ -1632,10 +1738,10 @@ not have a method with the specified name.</p></div>
 <li><code><a title="kl_exps.kernel_matern32" href="#kl_exps.kernel_matern32">kernel_matern32</a></code></li>
 <li><code><a title="kl_exps.kernel_se" href="#kl_exps.kernel_se">kernel_se</a></code></li>
 <li><code><a title="kl_exps.kl_gp_reg" href="#kl_exps.kl_gp_reg">kl_gp_reg</a></code></li>
-<li><code><a title="kl_exps.lege_eval_exp" href="#kl_exps.lege_eval_exp">lege_eval_exp</a></code></li>
-<li><code><a title="kl_exps.lege_nodes_weights" href="#kl_exps.lege_nodes_weights">lege_nodes_weights</a></code></li>
-<li><code><a title="kl_exps.lege_pols" href="#kl_exps.lege_pols">lege_pols</a></code></li>
-<li><code><a title="kl_exps.lege_uv" href="#kl_exps.lege_uv">lege_uv</a></code></li>
+<li><code><a title="kl_exps.legendre_eval_exp" href="#kl_exps.legendre_eval_exp">legendre_eval_exp</a></code></li>
+<li><code><a title="kl_exps.legendre_mats" href="#kl_exps.legendre_mats">legendre_mats</a></code></li>
+<li><code><a title="kl_exps.legendre_nodes_weights" href="#kl_exps.legendre_nodes_weights">legendre_nodes_weights</a></code></li>
+<li><code><a title="kl_exps.legendre_pols" href="#kl_exps.legendre_pols">legendre_pols</a></code></li>
 </ul>
 </li>
 <li><h3><a href="#header-classes">Classes</a></h3>
